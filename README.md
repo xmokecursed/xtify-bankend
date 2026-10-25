@@ -66,20 +66,8 @@ All settings are environment variables.
 | `MAX_YTDLP` | `1` | How many yt-dlp processes may run at once |
 | `MEM_LIMIT_MB` | `380` | Above this memory use, yt-dlp is skipped |
 
-The defaults are tuned for a **512 MB** server.
-
-## Deploy on Render (free tier)
-
-1. Create a new **Web Service** from this repo.
-2. Build command: `npm install`. Start command: `npm start`.
-3. Add the environment variable `LASTFM_API_KEY`.
-4. If the build fails with a Python version error from `yt-dlp-exec`, add `YOUTUBE_DL_SKIP_PYTHON_CHECK=1`.
-5. Optional: add `youtube_cookies.txt` as a **Secret File**. It is then found automatically at `/etc/secrets/youtube_cookies.txt`.
-6. Put the service URL into the app (`_baseUrl` in `lib/services/api_service.dart` in the Xtify repo).
-
-Free instances **sleep after a while without traffic**, so the first request after a pause can take 30 to 60 seconds.
+The defaults are tuned for a **Low-end** server. You can tune it according to your server.
 
 ## Notes
 
-- Never commit cookie files or API keys. Keep them in environment variables or secret files.
 - This is an independent personal project. It is not affiliated with YouTube, Google or Last.fm, and it may stop working when those services change.

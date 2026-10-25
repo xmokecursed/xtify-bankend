@@ -1,3 +1,8 @@
+// This backend is not the *best* but works. 
+// I coded it in a way that support doesn't cause memory overload on my poor server.
+// Theres leftover youtube cookies code because initially i thought to add my own dummy account 
+// for all fetching but youtube constantly blocks my server so it was moved to the app (built-in)
+
 const express = require('express');
 const ytDlpExec = require('yt-dlp-exec');
 const axios = require('axios');
@@ -12,11 +17,10 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Set LASTFM_API_KEY in the Render environment (no hardcoded fallback)
-const LASTFM_API_KEY = process.env.LASTFM_API_KEY || 'c73293f2ff9bf7eefc3e339e52767f28';
+const LASTFM_API_KEY = process.env.LASTFM_API_KEY
+// cost LASTFM_API_KEY = process.env.LASTFM_API_KEY || 'fallback api code'; // use this one if .env doesn't work
 const LASTFM_API_URL = 'http://ws.audioscrobbler.com/2.0/';
 
-// Last.fm returns a single object instead of an array when there is one item
 const toArray = x => (x == null ? [] : Array.isArray(x) ? x : [x]);
 
 let YOUTUBE_COOKIES_PATH = process.env.YOUTUBE_COOKIES_PATH;
@@ -59,7 +63,6 @@ async function searchWithYtDlp(q, limit = 25, target = `ytsearch${limit}:${q}`) 
   }
 }
 
-// Fallback
 
 const DEFAULT_INSTANCES = [
   'https://pipedapi.ducks.party',
@@ -100,15 +103,11 @@ async function searchWithPiped(q, limit = 25) {
   throw new Error(errors.join(' | '));
 }
 
-// Song search results rarely change, so keep them for hours (saves yt-dlp runs).
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX = 400;
 const searchCache = new Map();
 const inflightSearches = new Map(); // identical searches share one run
 
-// Every yt-dlp run is a Python process (~100 MB). On a 512 MB instance, several
-// at once get the server killed, so only MAX_YTDLP run at a time; any search that
-// arrives while yt-dlp is busy (or memory is tight) goes to Piped only.
 const MAX_YTDLP = parseInt(process.env.MAX_YTDLP || '1');
 const MEM_LIMIT_MB = parseInt(process.env.MEM_LIMIT_MB || '380');
 let ytDlpRunning = 0;
@@ -117,8 +116,6 @@ function ytDlpAvailable() {
   return ytDlpRunning < MAX_YTDLP && rssMb < MEM_LIMIT_MB;
 }
 
-// Hedged search: start yt-dlp right away; if it hasn't answered after HEDGE_MS
-// (or fails), also ask Piped and use whichever returns results first.
 const HEDGE_MS = 2000;
 
 async function searchHedged(q, limit = 25) {
@@ -170,8 +167,6 @@ async function searchHedged(q, limit = 25) {
 app.get('/search', async (req, res) => {
   const q = (req.query.q || '').toString().trim();
   if (!q) return res.status(400).send({ error: 'Query required' });
-
-  // ?limit=25 (5-50). The app asks for more when the user taps "Load more".
   const limit = Math.min(Math.max(parseInt(req.query.limit) || 25, 5), 50);
 
   const key = `${q.toLowerCase()}|${limit}`;
@@ -246,7 +241,6 @@ app.get('/radio/:artist', async (req, res) => {
   }
 });
 
-// Similar tracks (Last.fm track.getsimilar): powers the app's auto-queue
 app.get('/similar-tracks/:artist/:track', async (req, res) => {
   try {
     const { artist, track } = req.params;
@@ -277,8 +271,6 @@ app.get('/similar-tracks/:artist/:track', async (req, res) => {
   }
 });
 
-// Trending songs from Last.fm: GET /trending?limit=24[&country=United%20States]
-// Returns [{name, artist}] (no video ids; the app resolves them with /search).
 const trendingCache = new Map();
 const TRENDING_TTL_MS = 60 * 60 * 1000;
 
@@ -309,9 +301,7 @@ app.get('/trending', async (req, res) => {
   }
 });
 
-// GET /related/:id -> YouTube's own "Mix" for a video (what YouTube plays next),
-// as [{id,title,thumb,duration}]. One flat yt-dlp call, cached for hours; the app
-// asks once per ~25 songs, so YouTube isn't hit per song.
+
 const relatedCache = new Map();
 app.get('/related/:id', async (req, res) => {
   const id = req.params.id;
@@ -335,8 +325,6 @@ app.get('/related/:id', async (req, res) => {
   }
 });
 
-// GET /ytm/similar/:id?q=<artist title> -> songs similar to a video, from YouTube Music's
-// radio, falling back to a song search. Items carry video ids: playable right away.
 let ytmReady = null;
 function ytm() {
   if (!ytmReady) {
@@ -364,8 +352,6 @@ app.get('/ytm/similar/:id', async (req, res) => {
   }
 });
 
-// GET /ytm/artist/:name -> that artist's own songs from YouTube Music (exact name match).
-// The app builds its per-artist "Mix" playlists from this. Items carry video ids.
 const ytmArtistCache = new Map();
 
 app.get('/ytm/artist/:name', async (req, res) => {
@@ -390,7 +376,6 @@ app.get('/test', (req, res) => {
   res.send('OK');
 });
 
-// Get album information
 app.get('/album/:artist/:album', async (req, res) => {
   try {
     const { artist, album } = req.params;
@@ -443,7 +428,6 @@ app.get('/album/:artist/:album', async (req, res) => {
   }
 });
 
-// Search for tracks
 app.get('/track/search', async (req, res) => {
   try {
     const { q, limit = 10 } = req.query;

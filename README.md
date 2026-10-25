@@ -10,7 +10,8 @@ The Xtify app asks this server for things like "find this song", "what is simila
 - **Recommendations** from two sources:
   - **Last.fm:** similar artists, similar tracks, artist radio, trending songs, album info.
   - **YouTube Music:** "up next" songs for a video and an artist's songs (through `ytmusic-api`).
-- Basic protection for small servers: only a limited number of yt-dlp processes run at once and the server answers `503 busy` when memory is tight, so the app can fall back to Last.fm.
+- Basic protection for small servers: only a limited number of ytmusic processes run at once and the server answers `503 busy` when memory is tight, so the app can fall back to Last.fm.
+- It **does not** call yt-dlp itself.
 
 ## Endpoints
 
@@ -55,13 +56,15 @@ npm test
 
 ## Configuration
 
+Add your backend server link at [api_service.dart](https://github.com/xmokecursed/xtify/blob/main/lib/services/api_service.dart) at line 7
+
 All settings are environment variables.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LASTFM_API_KEY` | none (set your own) | Your Last.fm API key |
 | `PORT` | `3000` | Port to listen on |
-| `YOUTUBE_COOKIES_PATH` | `/etc/secrets/youtube_cookies.txt` if it exists | Optional cookies file for yt-dlp, which can help when YouTube blocks the server |
+~~ | `YOUTUBE_COOKIES_PATH` | `/etc/secrets/youtube_cookies.txt` if it exists | Optional cookies file for yt-dlp, which can help when YouTube blocks the server | ~~
 | `PIPED_INSTANCES` | built-in list | Comma-separated Piped API URLs for the search backup |
 | `MAX_YTDLP` | `1` | How many yt-dlp processes may run at once |
 | `MEM_LIMIT_MB` | `380` | Above this memory use, yt-dlp is skipped |

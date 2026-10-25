@@ -64,7 +64,6 @@ All settings are environment variables.
 | --- | --- | --- |
 | `LASTFM_API_KEY` | none (set your own) | Your Last.fm API key |
 | `PORT` | `3000` | Port to listen on |
-~~ | `YOUTUBE_COOKIES_PATH` | `/etc/secrets/youtube_cookies.txt` if it exists | Optional cookies file for yt-dlp, which can help when YouTube blocks the server | ~~
 | `PIPED_INSTANCES` | built-in list | Comma-separated Piped API URLs for the search backup |
 | `MAX_YTDLP` | `1` | How many yt-dlp processes may run at once |
 | `MEM_LIMIT_MB` | `380` | Above this memory use, yt-dlp is skipped |

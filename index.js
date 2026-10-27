@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const YTMusic = require('ytmusic-api');
 const { similarSongs, artistSongs } = require('./ytm');
+const { searchSoundCloud, resolveStream } = require('./sc');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -106,7 +107,7 @@ async function searchWithPiped(q, limit = 25) {
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_MAX = 400;
 const searchCache = new Map();
-const inflightSearches = new Map(); // identical searches share one run
+const inflightSearches = new Map();
 
 const MAX_YTDLP = parseInt(process.env.MAX_YTDLP || '1');
 const MEM_LIMIT_MB = parseInt(process.env.MEM_LIMIT_MB || '380');
@@ -140,7 +141,7 @@ async function searchHedged(q, limit = 25) {
   const ytAttempt = searchWithYtDlp(q, limit)
     .then(nonEmpty('yt-dlp'))
     .finally(() => { ytDlpRunning--; });
-  ytAttempt.catch(() => wake()); // yt-dlp failed: ask Piped right away
+  ytAttempt.catch(() => wake()); 
   const pipedAttempt = hedge.then(() => {
     if (done) throw new Error('skipped (yt-dlp answered first)');
     return searchWithPiped(q, limit);
@@ -369,6 +370,47 @@ app.get('/ytm/artist/:name', async (req, res) => {
     res.send(data);
   } catch (e) {
     res.status(502).send({ error: e.message });
+  }
+});
+
+const SC_SEARCH_TTL_MS = 60 * 60 * 1000;
+const scSearchCache = new Map();
+
+app.get('/sc/search', async (req, res) => {
+  const q = (req.query.q || '').toString().trim();
+  if (!q || q.length > 200) return res.status(400).send({ error: 'Query required' });
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 15, 1), 30);
+  const onlyPlayable = ['1', 'true'].includes((req.query.playable || '').toString());
+
+  const key = `${q.toLowerCase()}|${limit}`;
+  let results;
+  const hit = scSearchCache.get(key);
+  if (hit && Date.now() - hit.at < SC_SEARCH_TTL_MS) {
+    results = hit.results;
+  } else {
+    try {
+      results = await searchSoundCloud(q, limit);
+    } catch (e) {
+      return res.status(502).send({ error: e.response ? `SoundCloud HTTP ${e.response.status}` : e.message });
+    }
+    if (results.length) {
+      if (scSearchCache.size >= 200) scSearchCache.delete(scSearchCache.keys().next().value);
+      scSearchCache.set(key, { at: Date.now(), results });
+    }
+  }
+  res.send(onlyPlayable ? results.filter(r => r.status === 'playable') : results);
+});
+
+app.get('/sc/stream/:id', async (req, res) => {
+  const id = req.params.id;
+  if (!/^\d{1,20}$/.test(id)) return res.status(400).send({ error: 'bad track id' });
+  try {
+    res.send(await resolveStream(id));
+  } catch (e) {
+    if (e.status) return res.status(403).send({ error: e.message, status: e.status });
+    const upstream = e.response?.status;
+    if (upstream === 404) return res.status(404).send({ error: 'track not found' });
+    res.status(502).send({ error: upstream ? `SoundCloud HTTP ${upstream}` : e.message });
   }
 });
 

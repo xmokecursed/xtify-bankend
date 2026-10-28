@@ -445,7 +445,6 @@ app.get('/sc/play/:id', async (req, res) => {
     '-loglevel', 'error',
     '-headers', headers,
     '-allowed_extensions', 'ALL',
-    '-extension_picky', '0',
     '-i', s.url,
     '-vn', '-c:a', 'copy', '-f', 'adts', 'pipe:1',
   ]);

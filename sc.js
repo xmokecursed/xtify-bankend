@@ -117,31 +117,38 @@ async function resolveStream(id) {
     throw err;
   }
   
-  const tcs = (t.media?.transcodings || []).filter((c) => !c.snipped).sort((a, b) => rank(a) - rank(b));
+  const tcs = (t.media?.transcodings || []).filter(
+    (c) => !c.snipped && c.format?.protocol === 'progressive'
+  );
+
+  if (!tcs.length) {
+    const err = new Error('No direct progressive stream available for this track (HLS/DASH is restricted).');
+    err.code = 404;
+    throw err;
+  }
+
   const params = {};
   if (t.track_authorization) params.track_authorization = t.track_authorization;
 
-  const errors = [];
-  for (const c of tcs.slice(0, 3)) {
-    try {
-      const r = await apiJson(c.url, params);
-      if (r.url) {
-        return {
-          ...shape(t),
-          stream: {
-            url: r.url,
-            preset: c.preset,
-            protocol: c.format?.protocol,
-            mime: c.format?.mime_type,
-            headers: PLAY_HEADERS,
-          },
-        };
-      }
-    } catch (e) {
-      errors.push(`${c.preset}: ${e.response ? 'HTTP ' + e.response.status : e.message}`);
+  try {
+    const r = await apiJson(tcs[0].url, params);
+    if (r.url) {
+      return {
+        ...shape(t),
+        stream: {
+          url: r.url,
+          preset: tcs[0].preset,
+          protocol: tcs[0].format?.protocol,
+          mime: tcs[0].format?.mime_type,
+          headers: PLAY_HEADERS,
+        },
+      };
     }
+  } catch (e) {
+    throw new Error(`Failed to fetch stream URL: ${e.message}`);
   }
-  const err = new Error('no stream address was given' + (errors.length ? ` (${errors.join(', ')})` : ''));
+
+  const err = new Error('no stream address was given');
   err.code = 502;
   throw err;
 }

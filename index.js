@@ -441,25 +441,55 @@ app.get('/sc/play/:id', async (req, res) => {
 
   ffmpegRunning++;
   const ff = spawn(ffmpegPath, [
+    '-hide_banner',
     '-loglevel', 'error',
     '-headers', headers,
+    '-allowed_extensions', 'ALL',
+    '-extension_picky', '0',
     '-i', s.url,
     '-vn', '-c:a', 'copy', '-f', 'adts', 'pipe:1',
   ]);
 
   let released = false;
   const release = () => { if (!released) { released = true; ffmpegRunning--; } };
-  ff.on('close', release);
+  let started = false;
+  let stderr = '';
+
+  ff.stderr.on('data', (d) => {
+    stderr = (stderr + d.toString()).slice(-4000);
+  });
+
   ff.on('error', (err) => {
-    console.log('ffmpeg error:', err.message);
     release();
-    if (!res.headersSent) res.status(500).send({ error: 'ffmpeg failed' });
+    console.log('ffmpeg failed to start:', err.message, 'path:', ffmpegPath);
+    if (!res.headersSent) res.status(500).send({ error: 'ffmpeg failed to start', details: err.message, path: ffmpegPath });
     else res.destroy();
   });
-  ff.stderr.on('data', (d) => console.log('ffmpeg:', d.toString().trim()));
 
-  res.set({ 'Content-Type': 'audio/aac', 'Cache-Control': 'no-store' });
-  ff.stdout.pipe(res);
+  ff.on('close', (code) => {
+    release();
+    if (!started) {
+      console.log(`ffmpeg exited ${code} with no audio (${s.preset}):`, stderr.trim());
+      if (!res.headersSent) {
+        res.status(502).send({ error: 'ffmpeg produced no audio', code, preset: s.preset, details: stderr.trim().slice(-1500) });
+      }
+    } else {
+      if (stderr.trim()) console.log('ffmpeg:', stderr.trim());
+      res.end();
+    }
+  });
+
+  ff.stdout.on('data', (chunk) => {
+    if (!started) {
+      started = true;
+      res.set({ 'Content-Type': 'audio/aac', 'Cache-Control': 'no-store' });
+    }
+    if (!res.write(chunk)) {
+      ff.stdout.pause();
+      res.once('drain', () => ff.stdout.resume());
+    }
+  });
+
   res.on('close', () => ff.kill('SIGKILL'));
 });
 

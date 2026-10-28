@@ -11,7 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const YTMusic = require('ytmusic-api');
 const { similarSongs, artistSongs } = require('./ytm');
-const { searchSoundCloud, resolveStream, resolveHls, streamHls } = require('./sc');
+const { searchSoundCloud, resolveStream, streamTrack } = require('./sc');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -424,8 +424,7 @@ app.get('/sc/play/:id', async (req, res) => {
 
   streamsRunning++;
   try {
-    const s = await resolveHls(id);
-    await streamHls(res, s.url, s.mime);
+    await streamTrack(res, id);
   } catch (e) {
     console.log(`/sc/play/${id} failed:`, e.message);
     if (res.headersSent) return res.destroy();

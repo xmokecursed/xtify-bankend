@@ -11,10 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const YTMusic = require('ytmusic-api');
 const { similarSongs, artistSongs } = require('./ytm');
-const { spawn, execFile } = require('child_process');
-const os = require('os');
-const ffmpegPath = require('ffmpeg-static');
-const { searchSoundCloud, resolveStream, resolveHls, WEB_HEADERS } = require('./sc');
+const { searchSoundCloud, resolveStream, resolveHls, streamHls } = require('./sc');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -417,109 +414,28 @@ app.get('/sc/stream/:id', async (req, res) => {
   }
 });
 
-const MAX_FFMPEG = parseInt(process.env.MAX_FFMPEG || '2');
-let ffmpegRunning = 0;
+const MAX_STREAMS = parseInt(process.env.MAX_STREAMS || '6');
+let streamsRunning = 0;
 
 app.get('/sc/play/:id', async (req, res) => {
   const id = req.params.id;
   if (!/^\d{1,20}$/.test(id)) return res.status(400).send({ error: 'bad track id' });
-  if (ffmpegRunning >= MAX_FFMPEG) return res.status(503).send({ error: 'busy' });
+  if (streamsRunning >= MAX_STREAMS) return res.status(503).send({ error: 'busy' });
 
-  let s;
+  streamsRunning++;
   try {
-    s = await resolveHls(id);
+    const s = await resolveHls(id);
+    await streamHls(res, s.url, s.mime);
   } catch (e) {
+    console.log(`/sc/play/${id} failed:`, e.message);
+    if (res.headersSent) return res.destroy();
     if (e.status) return res.status(403).send({ error: e.message, status: e.status });
     const upstream = e.response?.status;
     if (upstream === 404) return res.status(404).send({ error: 'track not found' });
-    return res.status(e.code || 502).send({ error: upstream ? `SoundCloud HTTP ${upstream}` : e.message });
+    res.status(e.code || 502).send({ error: upstream ? `SoundCloud HTTP ${upstream}` : e.message });
+  } finally {
+    streamsRunning--;
   }
-
-  const headers =
-    `Referer: ${WEB_HEADERS.Referer}\r\n` +
-    `Origin: ${WEB_HEADERS.Origin}\r\n` +
-    `User-Agent: ${WEB_HEADERS['User-Agent']}\r\n`;
-
-  ffmpegRunning++;
-  const ff = spawn(ffmpegPath, [
-    '-nostdin',
-    '-hide_banner',
-    '-loglevel', 'error',
-    '-headers', headers,
-    '-allowed_extensions', 'ALL',
-    '-i', s.url,
-    '-vn', '-c:a', 'copy', '-f', 'adts', 'pipe:1',
-  ]);
-
-  let released = false;
-  const release = () => { if (!released) { released = true; ffmpegRunning--; } };
-  let started = false;
-  let stderr = '';
-
-  ff.stderr.on('data', (d) => {
-    stderr = (stderr + d.toString()).slice(-4000);
-  });
-
-  ff.on('error', (err) => {
-    release();
-    console.log('ffmpeg failed to start:', err.message, 'path:', ffmpegPath);
-    if (!res.headersSent) res.status(500).send({ error: 'ffmpeg failed to start', details: err.message, path: ffmpegPath });
-    else res.destroy();
-  });
-
-  ff.on('close', (code, signal) => {
-    release();
-    if (!started) {
-      console.log(`ffmpeg exited code=${code} signal=${signal} with no audio (${s.preset}):`, stderr.trim());
-      if (!res.headersSent) {
-        res.status(502).send({ error: 'ffmpeg produced no audio', code, signal, preset: s.preset, details: stderr.trim().slice(-1500) });
-      }
-    } else {
-      if (stderr.trim()) console.log('ffmpeg:', stderr.trim());
-      res.end();
-    }
-  });
-
-  ff.stdout.on('data', (chunk) => {
-    if (!started) {
-      started = true;
-      res.set({ 'Content-Type': 'audio/aac', 'Cache-Control': 'no-store' });
-    }
-    if (!res.write(chunk)) {
-      ff.stdout.pause();
-      res.once('drain', () => ff.stdout.resume());
-    }
-  });
-
-  res.on('close', () => ff.kill('SIGKILL'));
-});
-
-app.get('/sc/debug/:id', async (req, res) => {
-  const out = { ffmpegPath, ffmpegExists: fs.existsSync(ffmpegPath), rssMb: Math.round(process.memoryUsage().rss / 1048576), freeMb: Math.round(os.freemem() / 1048576), totalMb: Math.round(os.totalmem() / 1048576), arch: process.arch };
-  try {
-    out.ffmpegVersion = await new Promise((resolve) =>
-      execFile(ffmpegPath, ['-version'], { timeout: 10000 }, (err, so, se) =>
-        resolve(err ? `ERR ${err.code} ${err.signal || ''} ${err.message}`.slice(0, 300) : so.split('\n')[0])));
-    const s = await resolveHls(req.params.id);
-    out.preset = s.preset;
-    const pl = await axios.get(s.url, { headers: WEB_HEADERS, timeout: 15000, responseType: 'text', transformResponse: (d) => d });
-    out.playlistHead = String(pl.data).slice(0, 1200);
-    const lines = String(pl.data).split(/\r?\n/).filter(Boolean);
-    const map = lines.find((l) => l.startsWith('#EXT-X-MAP'));
-    const mapUri = map && /URI="([^"]+)"/.exec(map)?.[1];
-    const first = mapUri || lines.find((l) => !l.startsWith('#'));
-    if (first) {
-      const segUrl = new URL(first, s.url).href;
-      const r = await axios.get(segUrl, { headers: { ...WEB_HEADERS, Range: 'bytes=0-31' }, timeout: 15000, responseType: 'arraybuffer' });
-      out.firstFileStatus = r.status;
-      out.firstFileContentType = r.headers['content-type'];
-      out.firstFileHex = Buffer.from(r.data).toString('hex');
-      out.firstFileExt = new URL(segUrl).pathname.split('.').pop();
-    }
-  } catch (e) {
-    out.error = e.response ? `HTTP ${e.response.status}` : e.message;
-  }
-  res.send(out);
 });
 
 app.get('/test', (req, res) => {

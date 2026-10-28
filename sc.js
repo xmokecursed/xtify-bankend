@@ -170,11 +170,10 @@ async function resolveHls(id) {
 
   const params = t.track_authorization ? { track_authorization: t.track_authorization } : {};
 
-  // abr_sq sometimes 404s, so try each transcoding until one gives a URL
   for (const c of tcs) {
     try {
       const r = await apiJson(c.url, params);
-      if (r.url) return { ...shape(t), url: r.url, preset: c.preset };
+      if (r.url) return { ...shape(t), url: r.url, preset: c.preset, mime: c.format?.mime_type || '' };
     } catch (_) {}
   }
 
@@ -183,4 +182,55 @@ async function resolveHls(id) {
   throw err;
 }
 
-module.exports = { searchSoundCloud, resolveStream, resolveHls, labelOf, WEB_HEADERS };
+const fetchBuf = async (url) =>
+  Buffer.from((await axios.get(url, { headers: WEB_HEADERS, responseType: 'arraybuffer', timeout: TIMEOUT })).data);
+
+async function playlistParts(playlistUrl) {
+  const text = (await http(playlistUrl, { headers: WEB_HEADERS })).data;
+  const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.some((l) => l.startsWith('#EXT-X-KEY') && !l.includes('METHOD=NONE'))) {
+    const err = new Error('stream is encrypted');
+    err.code = 403;
+    throw err;
+  }
+  const abs = (u) => new URL(u, playlistUrl).href;
+  const map = lines.find((l) => l.startsWith('#EXT-X-MAP'));
+  const mapUri = map && /URI="([^"]+)"/.exec(map)?.[1];
+  const segments = lines.filter((l) => !l.startsWith('#')).map(abs);
+  if (!segments.length) {
+    const err = new Error('playlist has no segments');
+    err.code = 502;
+    throw err;
+  }
+  return { init: mapUri ? abs(mapUri) : null, segments };
+}
+
+const waitDrain = (res) =>
+  new Promise((resolve) => {
+    const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+    res.once('drain', done);
+    res.once('close', done);
+  });
+
+async function streamHls(res, playlistUrl, mime = '') {
+  const { init, segments } = await playlistParts(playlistUrl);
+  const urls = init ? [init, ...segments] : segments;
+  const type = init || /mp4/i.test(mime) ? 'audio/mp4' : /mpeg/i.test(mime) ? 'audio/mpeg' : 'audio/aac';
+
+  let aborted = false;
+  res.on('close', () => { aborted = true; });
+
+  let next = fetchBuf(urls[0]);
+  for (let n = 0; n < urls.length; n++) {
+    const buf = await next;
+    next = n + 1 < urls.length ? fetchBuf(urls[n + 1]) : null;
+    if (next) next.catch(() => {});
+    if (aborted) return;
+    if (!res.headersSent) res.set({ 'Content-Type': type, 'Cache-Control': 'no-store' });
+    if (!res.write(buf)) await waitDrain(res);
+    if (aborted) return;
+  }
+  res.end();
+}
+
+module.exports = { searchSoundCloud, resolveStream, resolveHls, streamHls, labelOf, WEB_HEADERS };

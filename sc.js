@@ -100,8 +100,12 @@ async function searchSoundCloud(q, limit = 15) {
     .map(shape);
 }
 
-const PRESET_ORDER = { aac_160k: 1, abr_sq: 2, aac_96k: 3 };
-const rank = (c) => (c.format?.protocol === 'progressive' ? 0 : PRESET_ORDER[c.preset] || 4);
+
+const rank = (c) => {
+  if (c.format?.protocol === 'progressive') return 0;
+  const HLS_PRESETS = { aac_160k: 1, abr_sq: 2, aac_96k: 3 };
+  return HLS_PRESETS[c.preset] || 4;
+};
 
 async function resolveStream(id) {
   const t = await apiJson(`${API}/tracks/${encodeURIComponent(id)}`, {});
@@ -112,12 +116,13 @@ async function resolveStream(id) {
     err.code = 403;
     throw err;
   }
+  
   const tcs = (t.media?.transcodings || []).filter((c) => !c.snipped).sort((a, b) => rank(a) - rank(b));
   const params = {};
   if (t.track_authorization) params.track_authorization = t.track_authorization;
 
   const errors = [];
-  for (const c of tcs.slice(0, 2)) {
+  for (const c of tcs.slice(0, 3)) {
     try {
       const r = await apiJson(c.url, params);
       if (r.url) {

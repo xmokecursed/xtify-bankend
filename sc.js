@@ -57,6 +57,8 @@ async function getClientId(force = false) {
   return clientIdPending;
 }
 
+setTimeout(() => getClientId().catch(() => {}), 0);
+
 async function apiJson(url, params) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const client_id = await getClientId(attempt > 0);
@@ -163,22 +165,34 @@ async function resolveHls(id) {
     throw err;
   }
 
+  const all = t.media?.transcodings || [];
+  const summary = `policy=${t.policy}; transcodings=[${all
+    .map((c) => `${c.preset}/${c.format?.protocol}${c.snipped ? '/snipped' : ''}`)
+    .join(', ')}]`;
+
   const order = { aac_160k: 0, aac_96k: 1, abr_sq: 2 };
-  const tcs = (t.media?.transcodings || [])
+  const tcs = all
     .filter((c) => !c.snipped && c.format?.protocol === 'hls')
     .sort((a, b) => (order[a.preset] ?? 9) - (order[b.preset] ?? 9));
 
   const params = t.track_authorization ? { track_authorization: t.track_authorization } : {};
 
+  const tried = [];
   for (const c of tcs) {
     try {
       const r = await apiJson(c.url, params);
       if (r.url) return { ...shape(t), url: r.url, preset: c.preset, mime: c.format?.mime_type || '' };
-    } catch (_) {}
+      tried.push(`${c.preset}: no url`);
+    } catch (e) {
+      tried.push(`${c.preset}: ${e.response?.status ? 'HTTP ' + e.response.status : e.message}`);
+    }
   }
 
-  const err = new Error('no HLS stream address was given');
-  err.code = 502;
+  const denied = tried.length > 0 && tried.every((x) => /HTTP (401|403|404)/.test(x));
+  const err = new Error(
+    `no HLS stream address was given (${tried.join('; ') || 'no usable hls transcodings'}) ${summary}`
+  );
+  err.code = denied || !tried.length ? 403 : 502;
   throw err;
 }
 
@@ -222,8 +236,9 @@ async function playlistParts(playlistUrl) {
   return { init: mapUri ? abs(mapUri) : null, segments };
 }
 
+// Resolve + playlist are cached for a few minutes so replays and retries start instantly.
 const HLS_TTL_MS = 10 * 60 * 1000;
-const hlsCache = new Map();
+const hlsCache = new Map(); // id -> { at, promise }
 
 function getHlsParts(id) {
   const hit = hlsCache.get(id);
@@ -242,10 +257,12 @@ const waitDrain = (res) =>
     res.once('close', done);
   });
 
-const PREFETCH = 4;
+const PREFETCH = 8;
 
 async function streamTrack(res, id) {
+  const t0 = Date.now();
   const { init, segments, mime } = await getHlsParts(id);
+  const tParts = Date.now() - t0;
   const urls = init ? [init, ...segments] : segments;
   const type = init || /mp4/i.test(mime) ? 'audio/mp4' : /mpeg/i.test(mime) ? 'audio/mpeg' : 'audio/aac';
 
@@ -262,16 +279,27 @@ async function streamTrack(res, id) {
     }
   };
 
+  let bytes = 0;
+  let tFirst = 0;
   fill();
   while (queue.length) {
     const buf = await queue.shift();
     fill();
     if (aborted) return;
-    if (!res.headersSent) res.set({ 'Content-Type': type, 'Cache-Control': 'no-store' });
+    if (!res.headersSent) {
+      tFirst = Date.now() - t0;
+      res.set({
+        'Content-Type': type,
+        'Cache-Control': 'no-store',
+        'Server-Timing': `lookup;dur=${tParts}, firstbyte;dur=${tFirst}`,
+      });
+    }
+    bytes += buf.length;
     if (!res.write(buf)) await waitDrain(res);
     if (aborted) return;
   }
   res.end();
+  console.log(`/sc/play/${id}: lookup ${tParts}ms, first byte ${tFirst}ms, total ${Date.now() - t0}ms, ${urls.length} files, ${Math.round(bytes / 1024)} KB`);
 }
 
 module.exports = { searchSoundCloud, resolveStream, resolveHls, streamTrack, labelOf, WEB_HEADERS };

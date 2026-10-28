@@ -17,6 +17,7 @@
     "express": "^5.3.0",
     "lastfm": "^0.9.4",
     "yt-dlp-exec": "^1.0.2",
-    "ytmusic-api": "^5.3.1"
+    "ytmusic-api": "^5.3.1",
+    "ffmpeg-static": "^5.2.0"
   }
 }

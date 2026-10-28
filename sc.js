@@ -182,8 +182,25 @@ async function resolveHls(id) {
   throw err;
 }
 
-const fetchBuf = async (url) =>
-  Buffer.from((await axios.get(url, { headers: WEB_HEADERS, responseType: 'arraybuffer', timeout: TIMEOUT })).data);
+axios.defaults.httpsAgent = new (require('https').Agent)({ keepAlive: true, maxSockets: 32 });
+
+async function fetchBuf(url, tries = 3) {
+  let last;
+  for (let n = 0; n < tries; n++) {
+    try {
+      const r = await axios.get(url, { headers: WEB_HEADERS, responseType: 'arraybuffer', timeout: TIMEOUT });
+      return Buffer.from(r.data);
+    } catch (e) {
+      last = e;
+      const code = e.response?.status;
+      if (code && code < 500 && code !== 429) break;
+      await new Promise((r) => setTimeout(r, 300 * (n + 1)));
+    }
+  }
+  const where = url.split('?')[0].split('/').slice(-2).join('/');
+  last.message = `segment ${where}: ${last.response?.status ? 'HTTP ' + last.response.status : last.message}`;
+  throw last;
+}
 
 async function playlistParts(playlistUrl) {
   const text = (await http(playlistUrl, { headers: WEB_HEADERS })).data;
@@ -205,6 +222,19 @@ async function playlistParts(playlistUrl) {
   return { init: mapUri ? abs(mapUri) : null, segments };
 }
 
+const HLS_TTL_MS = 10 * 60 * 1000;
+const hlsCache = new Map();
+
+function getHlsParts(id) {
+  const hit = hlsCache.get(id);
+  if (hit && Date.now() - hit.at < HLS_TTL_MS) return hit.promise;
+  const promise = resolveHls(id).then(async (s) => ({ ...(await playlistParts(s.url)), mime: s.mime }));
+  hlsCache.set(id, { at: Date.now(), promise });
+  promise.catch(() => hlsCache.delete(id));
+  if (hlsCache.size > 200) hlsCache.delete(hlsCache.keys().next().value);
+  return promise;
+}
+
 const waitDrain = (res) =>
   new Promise((resolve) => {
     const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
@@ -212,19 +242,30 @@ const waitDrain = (res) =>
     res.once('close', done);
   });
 
-async function streamHls(res, playlistUrl, mime = '') {
-  const { init, segments } = await playlistParts(playlistUrl);
+const PREFETCH = 4;
+
+async function streamTrack(res, id) {
+  const { init, segments, mime } = await getHlsParts(id);
   const urls = init ? [init, ...segments] : segments;
   const type = init || /mp4/i.test(mime) ? 'audio/mp4' : /mpeg/i.test(mime) ? 'audio/mpeg' : 'audio/aac';
 
   let aborted = false;
   res.on('close', () => { aborted = true; });
 
-  let next = fetchBuf(urls[0]);
-  for (let n = 0; n < urls.length; n++) {
-    const buf = await next;
-    next = n + 1 < urls.length ? fetchBuf(urls[n + 1]) : null;
-    if (next) next.catch(() => {});
+  const queue = [];
+  let nextIdx = 0;
+  const fill = () => {
+    while (queue.length < PREFETCH && nextIdx < urls.length) {
+      const p = fetchBuf(urls[nextIdx++]);
+      p.catch(() => {});
+      queue.push(p);
+    }
+  };
+
+  fill();
+  while (queue.length) {
+    const buf = await queue.shift();
+    fill();
     if (aborted) return;
     if (!res.headersSent) res.set({ 'Content-Type': type, 'Cache-Control': 'no-store' });
     if (!res.write(buf)) await waitDrain(res);
@@ -233,4 +274,4 @@ async function streamHls(res, playlistUrl, mime = '') {
   res.end();
 }
 
-module.exports = { searchSoundCloud, resolveStream, resolveHls, streamHls, labelOf, WEB_HEADERS };
+module.exports = { searchSoundCloud, resolveStream, resolveHls, streamTrack, labelOf, WEB_HEADERS };

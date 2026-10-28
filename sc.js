@@ -153,4 +153,34 @@ async function resolveStream(id) {
   throw err;
 }
 
-module.exports = { searchSoundCloud, resolveStream, labelOf };
+async function resolveHls(id) {
+  const t = await apiJson(`${API}/tracks/${encodeURIComponent(id)}`, {});
+  const status = labelOf(t);
+  if (status !== 'playable') {
+    const err = new Error(`track is ${status}`);
+    err.status = status;
+    err.code = 403;
+    throw err;
+  }
+
+  const order = { aac_160k: 0, aac_96k: 1, abr_sq: 2 };
+  const tcs = (t.media?.transcodings || [])
+    .filter((c) => !c.snipped && c.format?.protocol === 'hls')
+    .sort((a, b) => (order[a.preset] ?? 9) - (order[b.preset] ?? 9));
+
+  const params = t.track_authorization ? { track_authorization: t.track_authorization } : {};
+
+  // abr_sq sometimes 404s, so try each transcoding until one gives a URL
+  for (const c of tcs) {
+    try {
+      const r = await apiJson(c.url, params);
+      if (r.url) return { ...shape(t), url: r.url, preset: c.preset };
+    } catch (_) {}
+  }
+
+  const err = new Error('no HLS stream address was given');
+  err.code = 502;
+  throw err;
+}
+
+module.exports = { searchSoundCloud, resolveStream, resolveHls, labelOf, WEB_HEADERS };

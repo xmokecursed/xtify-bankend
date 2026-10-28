@@ -14,6 +14,9 @@ const { similarSongs, artistSongs } = require('./ytm');
 const { searchSoundCloud, resolveStream } = require('./sc');
 const app = express();
 const port = process.env.PORT || 3000;
+const { spawn } = require('child_process');
+const ffmpegPath = require('ffmpeg-static');
+const { resolveHls, WEB_HEADERS } = require('./sc');
 
 app.use(cors());
 app.use(express.json());
@@ -511,6 +514,56 @@ app.get('/track/search', async (req, res) => {
   } catch (e) {
     console.error('Error searching tracks:', e.message);
     res.status(500).send({ error: 'Failed to search tracks' });
+  }
+});
+
+async function resolveHls(id) {
+  const t = await apiJson(`${API}/tracks/${encodeURIComponent(id)}`, {});
+  const status = labelOf(t);
+  if (status !== 'playable') {
+    const err = new Error(`track is ${status}`);
+    err.code = 403;
+    throw err;
+  }
+
+  const order = { aac_160k: 0, aac_96k: 1, abr_sq: 2 };
+  const tcs = (t.media?.transcodings || [])
+    .filter((c) => !c.snipped && c.format?.protocol === 'hls')
+    .sort((a, b) => (order[a.preset] ?? 9) - (order[b.preset] ?? 9));
+
+  const params = t.track_authorization ? { track_authorization: t.track_authorization } : {};
+
+  for (const c of tcs) {
+    try {
+      const r = await apiJson(c.url, params);
+      if (r.url) return { ...shape(t), url: r.url, preset: c.preset };
+    } catch (_) {}
+  }
+  const err = new Error('no HLS stream address was given');
+  err.code = 502;
+  throw err;
+}
+
+module.exports = { searchSoundCloud, resolveStream, resolveHls, labelOf, WEB_HEADERS };
+
+
+app.get('/sc/play/:id', async (req, res) => {
+  try {
+    const s = await resolveHls(req.params.id);
+    const hdr = `Referer: ${WEB_HEADERS.Referer}\r\nOrigin: ${WEB_HEADERS.Origin}\r\nUser-Agent: ${WEB_HEADERS['User-Agent']}\r\n`;
+
+    const ff = spawn(ffmpegPath, [
+      '-headers', hdr,
+      '-i', s.url,
+      '-vn', '-c:a', 'copy', '-f', 'adts', 'pipe:1',
+    ]);
+
+    res.set({ 'Content-Type': 'audio/aac', 'Cache-Control': 'no-store' });
+    ff.stdout.pipe(res);
+    ff.on('error', () => res.destroy());
+    req.on('close', () => ff.kill('SIGKILL'));
+  } catch (e) {
+    res.status(e.code || 500).json({ error: e.message });
   }
 });
 
